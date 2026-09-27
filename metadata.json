@@ -1,0 +1,6 @@
+{
+  "name": "Ten Questions",
+  "description": "A competitive online mobile quiz game with 10 typed questions per stage, unlimited levels, multilingual support, and global progression.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
