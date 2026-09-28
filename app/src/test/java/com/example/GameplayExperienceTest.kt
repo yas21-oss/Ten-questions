@@ -87,31 +87,45 @@ class GameplayExperienceTest {
     return gameViewModel.gameState.value
   }
 
-  // 3. Gameplay Loop: Start stage, wrong answer loses heart, retry, correct answer advances
+  // 3. Gameplay Loop: Start stage, wrong answer loses 1 heart (5 -> 4 -> 3 -> 2 -> 1), retry, correct answer advances with 5 restored
   @Test
   fun testGameplayHeartLossAndProgression() {
     gameViewModel.startStage(stageNumber = 1, language = AppLanguage.ENGLISH, playerId = "test_player_gamefeel")
     var state = waitUntilState { it is GameState.Playing } as GameState.Playing
 
     assertEquals(0, state.currentQuestionIndex)
-    assertEquals(3, state.attemptsLeft)
+    assertEquals(5, state.attemptsLeft)
     assertEquals(0, state.stageAccumulatedXp)
 
     val currentQ = state.currentQuestion
     assertNotNull(currentQ)
 
-    // Submit wrong answer
-    gameViewModel.updateInput("COMPLETELY_WRONG_ANSWER_XYZ")
+    // Submit wrong answer 1 (5 -> 4)
+    gameViewModel.updateInput("COMPLETELY_WRONG_ANSWER_1")
     gameViewModel.submitAnswer(null)
-    state = waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 2 } as GameState.Playing
+    state = waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 4 } as GameState.Playing
 
-    assertEquals("Should have lost one attempt", 2, state.attemptsLeft)
+    assertEquals("Should have 4 attempts remaining", 4, state.attemptsLeft)
     assertTrue("Feedback message should be present", state.feedbackMessage != null)
     assertTrue("Error shake should be triggered", state.isErrorShake)
     assertEquals("Still on first question", 0, state.currentQuestionIndex)
 
-    // Submit second wrong answer
-    gameViewModel.updateInput("STILL_WRONG")
+    // Submit wrong answer 2 (4 -> 3)
+    gameViewModel.updateInput("COMPLETELY_WRONG_ANSWER_2")
+    gameViewModel.submitAnswer(null)
+    state = waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 3 } as GameState.Playing
+
+    assertEquals("Should have 3 attempts remaining", 3, state.attemptsLeft)
+
+    // Submit wrong answer 3 (3 -> 2)
+    gameViewModel.updateInput("COMPLETELY_WRONG_ANSWER_3")
+    gameViewModel.submitAnswer(null)
+    state = waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 2 } as GameState.Playing
+
+    assertEquals("Should have 2 attempts remaining", 2, state.attemptsLeft)
+
+    // Submit wrong answer 4 (2 -> 1)
+    gameViewModel.updateInput("COMPLETELY_WRONG_ANSWER_4")
     gameViewModel.submitAnswer(null)
     state = waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 1 } as GameState.Playing
 
@@ -123,33 +137,43 @@ class GameplayExperienceTest {
     gameViewModel.submitAnswer(null)
     state = waitUntilState { it is GameState.Playing && (it as GameState.Playing).currentQuestionIndex == 1 } as GameState.Playing
 
-    // Advances to question 1 (second question) with 3 full hearts restored
+    // Advances to question 1 (second question) with 5 full hearts restored
     assertEquals("Should advance to question 2", 1, state.currentQuestionIndex)
-    assertEquals("Hearts should be reset to 3", 3, state.attemptsLeft)
+    assertEquals("Hearts should be reset to 5", 5, state.attemptsLeft)
     assertTrue("Accumulated XP should increase", state.stageAccumulatedXp > 0)
     assertTrue("Last awarded XP should be recorded", state.lastAwardedXp != null && state.lastAwardedXp!! > 0)
     assertFalse("Error shake reset", state.isErrorShake)
   }
 
-  // 4. Stage Failure: Exhausting all 3 attempts triggers GameState.Failed with correct explanation
+  // 4. Stage Failure: Exhausting all 5 attempts triggers GameState.Failed with correct explanation
   @Test
-  fun testStageFailureAfterThreeFailedAttempts() {
+  fun testStageFailureAfterFiveFailedAttempts() {
     gameViewModel.startStage(stageNumber = 1, language = AppLanguage.ENGLISH, playerId = "player_fail_test")
     val state = waitUntilState { it is GameState.Playing } as GameState.Playing
     val question = state.currentQuestion
 
-    // Attempt 1 fail
+    // Attempt 1 fail (5 -> 4)
     gameViewModel.updateInput("wrong_1")
+    gameViewModel.submitAnswer(null)
+    waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 4 }
+
+    // Attempt 2 fail (4 -> 3)
+    gameViewModel.updateInput("wrong_2")
+    gameViewModel.submitAnswer(null)
+    waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 3 }
+
+    // Attempt 3 fail (3 -> 2)
+    gameViewModel.updateInput("wrong_3")
     gameViewModel.submitAnswer(null)
     waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 2 }
 
-    // Attempt 2 fail
-    gameViewModel.updateInput("wrong_2")
+    // Attempt 4 fail (2 -> 1)
+    gameViewModel.updateInput("wrong_4")
     gameViewModel.submitAnswer(null)
     waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == 1 }
 
-    // Attempt 3 fail -> Triggers failure
-    gameViewModel.updateInput("wrong_3")
+    // Attempt 5 fail (1 -> 0) -> Triggers failure
+    gameViewModel.updateInput("wrong_5")
     gameViewModel.submitAnswer(null)
     val failedState = waitUntilState { it is GameState.Failed } as GameState.Failed
 
@@ -226,5 +250,88 @@ class GameplayExperienceTest {
       assertEquals("ar", q.language)
       assertTrue("Arabic question must contain Arabic text", q.question.any { it in '\u0600'..'\u06FF' })
     }
+  }
+
+  // 9. In-Game Keyboard Mechanics: Input, space, backspace, numbers, decimals, dates, units
+  @Test
+  fun testKeyboardInputAndModes() {
+    gameViewModel.startStage(stageNumber = 1, language = AppLanguage.ENGLISH, playerId = "kb_test_player")
+    var state = waitUntilState { it is GameState.Playing } as GameState.Playing
+
+    // Test typing and backspace
+    var input = ""
+    val type = { char: Char ->
+      input += char
+      gameViewModel.updateInput(input)
+    }
+    val backspace = {
+      if (input.isNotEmpty()) {
+        input = input.dropLast(1)
+        gameViewModel.updateInput(input)
+      }
+    }
+
+    // Type "PARIS"
+    "PARIS".forEach { type(it) }
+    state = gameViewModel.gameState.value as GameState.Playing
+    assertEquals("PARIS", state.userInput)
+
+    // Backspace twice -> "PAR"
+    backspace()
+    backspace()
+    state = gameViewModel.gameState.value as GameState.Playing
+    assertEquals("PAR", state.userInput)
+
+    // Space and more text -> "PAR IS"
+    type(' ')
+    type('I')
+    type('S')
+    state = gameViewModel.gameState.value as GameState.Playing
+    assertEquals("PAR IS", state.userInput)
+
+    // Test numeric, decimal, date and unit representations
+    // Decimal: "3.14"
+    gameViewModel.updateInput("3.14")
+    assertEquals("3.14", (gameViewModel.gameState.value as GameState.Playing).userInput)
+
+    // Date: "20/07/1969"
+    gameViewModel.updateInput("20/07/1969")
+    assertEquals("20/07/1969", (gameViewModel.gameState.value as GameState.Playing).userInput)
+
+    // Year: "1969"
+    gameViewModel.updateInput("1969")
+    assertEquals("1969", (gameViewModel.gameState.value as GameState.Playing).userInput)
+
+    // Unit: "100 km"
+    gameViewModel.updateInput("100 km")
+    assertEquals("100 km", (gameViewModel.gameState.value as GameState.Playing).userInput)
+
+    // Arabic typing
+    gameViewModel.updateInput("باريس")
+    assertEquals("باريس", (gameViewModel.gameState.value as GameState.Playing).userInput)
+  }
+
+  // 10. 5-Heart Life Cycle Progression: 5 -> 4 -> 3 -> 2 -> 1 -> 0
+  @Test
+  fun testFiveHeartLifeCycleSequence() {
+    gameViewModel.startStage(stageNumber = 1, language = AppLanguage.ENGLISH, playerId = "hearts_test_player")
+    var state = waitUntilState { it is GameState.Playing } as GameState.Playing
+
+    // Initial: 5 hearts
+    assertEquals(5, state.attemptsLeft)
+
+    val remainingExpected = listOf(4, 3, 2, 1)
+    for (expected in remainingExpected) {
+      gameViewModel.updateInput("INCORRECT_ATTEMPT_$expected")
+      gameViewModel.submitAnswer(null)
+      state = waitUntilState { it is GameState.Playing && (it as GameState.Playing).attemptsLeft == expected } as GameState.Playing
+      assertEquals(expected, state.attemptsLeft)
+    }
+
+    // Final failure attempt
+    gameViewModel.updateInput("FINAL_INCORRECT")
+    gameViewModel.submitAnswer(null)
+    val failed = waitUntilState { it is GameState.Failed } as GameState.Failed
+    assertEquals(1, failed.stageNumber)
   }
 }

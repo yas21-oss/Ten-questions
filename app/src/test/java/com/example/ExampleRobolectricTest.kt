@@ -186,6 +186,174 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun testArabicGreenAnswerVariationsPass() {
+    val qGreen = Question(
+      id = "test_ar_green",
+      language = "ar",
+      category = "everyday",
+      difficulty = 1,
+      question = "ما لون الانطلاق في علامة الطريق؟",
+      answerType = AnswerType.TEXT,
+      acceptedAnswers = listOf("أخضر")
+    )
+
+    // 1. Exact match ("أخضر" -> "أخضر")
+    val res1 = AnswerValidator.evaluate("أخضر", qGreen)
+    assertTrue("Exact 'أخضر' should be correct", res1.isCorrect)
+    assertEquals(100, res1.xpEarned)
+
+    // 2. Without hamza on Alef ("اخضر" -> "أخضر")
+    val res2 = AnswerValidator.evaluate("اخضر", qGreen)
+    assertTrue("Without hamza 'اخضر' should be accepted", res2.isCorrect)
+    assertEquals(95, res2.xpEarned)
+
+    // 3. With definite article and hamza ("الأخضر" -> "أخضر")
+    val res3 = AnswerValidator.evaluate("الأخضر", qGreen)
+    assertTrue("With article 'الأخضر' should be accepted", res3.isCorrect)
+    assertEquals(95, res3.xpEarned)
+
+    // 4. With definite article without hamza ("الاخضر" -> "أخضر")
+    val res4 = AnswerValidator.evaluate("الاخضر", qGreen)
+    assertTrue("With article without hamza 'الاخضر' should be accepted", res4.isCorrect)
+    assertEquals(95, res4.xpEarned)
+
+    // 5. Answers with harmless harakat differences
+    assertTrue("Harakat on article form should be accepted", AnswerValidator.evaluate("الْأَخْضَرُ", qGreen).isCorrect)
+    assertTrue("Harakat on bare form should be accepted", AnswerValidator.evaluate("أَخْضَرُ", qGreen).isCorrect)
+
+    // 6. Normal whitespace differences
+    assertTrue("Leading/trailing spaces should be accepted", AnswerValidator.evaluate("   أخضر   ", qGreen).isCorrect)
+    assertTrue("Leading/trailing spaces on article should be accepted", AnswerValidator.evaluate("   الأخضر   ", qGreen).isCorrect)
+
+    // 7. Punctuation differences where appropriate
+    assertTrue("Punctuation like dot should be accepted", AnswerValidator.evaluate("أخضر.", qGreen).isCorrect)
+    assertTrue("Punctuation like exclamation should be accepted", AnswerValidator.evaluate("الأخضر!", qGreen).isCorrect)
+    assertTrue("Arabic question mark should be accepted", AnswerValidator.evaluate("أخضر؟", qGreen).isCorrect)
+
+    // 8. Reverse: question acceptedAnswers has "الأخضر", user types "أخضر" or "اخضر"
+    val qGreenDefinite = Question(
+      id = "test_ar_green_def",
+      language = "ar",
+      category = "everyday",
+      difficulty = 1,
+      question = "ما لون الانطلاق في علامة الطريق؟",
+      answerType = AnswerType.TEXT,
+      acceptedAnswers = listOf("الأخضر")
+    )
+    assertTrue(AnswerValidator.evaluate("أخضر", qGreenDefinite).isCorrect)
+    assertTrue(AnswerValidator.evaluate("اخضر", qGreenDefinite).isCorrect)
+    assertTrue(AnswerValidator.evaluate("الأخضر", qGreenDefinite).isCorrect)
+    assertTrue(AnswerValidator.evaluate("الاخضر", qGreenDefinite).isCorrect)
+  }
+
+  @Test
+  fun testArabicGenuinelyDifferentWordsMustFail() {
+    val qMoon = Question(
+      id = "test_ar_moon",
+      language = "ar",
+      category = "science",
+      difficulty = 1,
+      question = "ما هو التابع الطبيعي للأرض؟",
+      answerType = AnswerType.TEXT,
+      acceptedAnswers = listOf("قمر")
+    )
+
+    // Genuinely different Arabic words must NOT become equal because of normalization:
+    // - "عمر" ≠ "قمر"
+    assertFalse("'عمر' must not be accepted for 'قمر'", AnswerValidator.evaluate("عمر", qMoon).isCorrect)
+    // - "قمرين" ≠ "قمر" (dual form)
+    assertFalse("'قمرين' must not be accepted for 'قمر'", AnswerValidator.evaluate("قمرين", qMoon).isCorrect)
+    // - "قمره" ≠ "قمر" (possessive)
+    assertFalse("'قمره' must not be accepted for 'قمر'", AnswerValidator.evaluate("قمره", qMoon).isCorrect)
+    // - "قمح" ≠ "قمر" (wheat)
+    assertFalse("'قمح' must not be accepted for 'قمر'", AnswerValidator.evaluate("قمح", qMoon).isCorrect)
+    // - "قمرر" ≠ "قمر"
+    assertFalse("'قمرر' must not be accepted for 'قمر'", AnswerValidator.evaluate("قمرر", qMoon).isCorrect)
+    // - "العمر" ≠ "قمر"
+    assertFalse("'العمر' must not be accepted for 'قمر'", AnswerValidator.evaluate("العمر", qMoon).isCorrect)
+    // Unrelated words must remain incorrect
+    assertFalse("'شمس' must not be accepted for 'قمر'", AnswerValidator.evaluate("شمس", qMoon).isCorrect)
+    assertFalse("'نجم' must not be accepted for 'قمر'", AnswerValidator.evaluate("نجم", qMoon).isCorrect)
+
+    // For "أخضر", genuinely different colors must fail:
+    val qGreen = Question(
+      id = "test_ar_green_fail",
+      language = "ar",
+      category = "everyday",
+      difficulty = 1,
+      question = "ما لون الانطلاق؟",
+      answerType = AnswerType.TEXT,
+      acceptedAnswers = listOf("أخضر")
+    )
+    assertFalse("Red 'أحمر' must fail for green", AnswerValidator.evaluate("أحمر", qGreen).isCorrect)
+    assertFalse("Red with article 'الأحمر' must fail for green", AnswerValidator.evaluate("الأحمر", qGreen).isCorrect)
+    assertFalse("Blue 'أزرق' must fail for green", AnswerValidator.evaluate("أزرق", qGreen).isCorrect)
+    assertFalse("Yellow 'أصفر' must fail for green", AnswerValidator.evaluate("أصفر", qGreen).isCorrect)
+    assertFalse("Black 'أسود' must fail for green", AnswerValidator.evaluate("أسود", qGreen).isCorrect)
+  }
+
+  @Test
+  fun testArabicHamzaAndDefiniteArticleEquivalence() {
+    // ؤ / ئ variations (مسؤول vs مسئول, شؤون vs شئون)
+    val qResponsible = Question(
+      id = "test_ar_hamza",
+      language = "ar",
+      category = "language",
+      difficulty = 2,
+      question = "من هو الشخص المكلف بالعمل؟",
+      answerType = AnswerType.TEXT,
+      acceptedAnswers = listOf("مسؤول")
+    )
+    assertTrue("Egyptian spelling 'مسئول' should match 'مسؤول'", AnswerValidator.evaluate("مسئول", qResponsible).isCorrect)
+    assertTrue("Standard spelling 'مسؤول' should match 'مسؤول'", AnswerValidator.evaluate("مسؤول", qResponsible).isCorrect)
+    assertTrue("Definite 'المسؤول' should match 'مسؤول'", AnswerValidator.evaluate("المسؤول", qResponsible).isCorrect)
+    assertTrue("Definite 'المسئول' should match 'مسؤول'", AnswerValidator.evaluate("المسئول", qResponsible).isCorrect)
+
+    // Beach: شاطئ vs شاطي
+    val qBeach = Question(
+      id = "test_ar_beach",
+      language = "ar",
+      category = "geography",
+      difficulty = 1,
+      question = "ماذا تسمى حافة البحر البرية؟",
+      answerType = AnswerType.TEXT,
+      acceptedAnswers = listOf("شاطئ")
+    )
+    assertTrue("Word-final Yeh 'شاطي' should match 'شاطئ'", AnswerValidator.evaluate("شاطي", qBeach).isCorrect)
+    assertTrue("Definite 'الشاطئ' should match 'شاطئ'", AnswerValidator.evaluate("الشاطئ", qBeach).isCorrect)
+    assertTrue("Definite 'الشاطي' should match 'شاطئ'", AnswerValidator.evaluate("الشاطي", qBeach).isCorrect)
+
+    // Multi-word phrase with definite articles
+    val qPacific = Question(
+      id = "test_ar_pacific",
+      language = "ar",
+      category = "geography",
+      difficulty = 2,
+      question = "ما هو أكبر محيط في العالم؟",
+      answerType = AnswerType.TEXT,
+      acceptedAnswers = listOf("المحيط الهادئ")
+    )
+    assertTrue(AnswerValidator.evaluate("المحيط الهادئ", qPacific).isCorrect)
+    assertTrue(AnswerValidator.evaluate("المحيط الهادي", qPacific).isCorrect)
+    assertTrue(AnswerValidator.evaluate("محيط هادئ", qPacific).isCorrect)
+    assertTrue(AnswerValidator.evaluate("محيط هادي", qPacific).isCorrect)
+    assertFalse(AnswerValidator.evaluate("المحيط الأطلسي", qPacific).isCorrect)
+
+    // Reserved words where 'ال' is NOT a removable definite article (e.g. الله)
+    val qAllah = Question(
+      id = "test_ar_reserved",
+      language = "ar",
+      category = "general",
+      difficulty = 1,
+      question = "من هو الخالق في الإسلام؟",
+      answerType = AnswerType.TEXT,
+      acceptedAnswers = listOf("الله")
+    )
+    assertTrue(AnswerValidator.evaluate("الله", qAllah).isCorrect)
+    assertFalse("Short remainder 'له' must NOT be accepted for 'الله'", AnswerValidator.evaluate("له", qAllah).isCorrect)
+  }
+
+  @Test
   fun testNumericalAndUnitAnswers() {
     // Days in a year (target 365.0)
     val qDays = Question(

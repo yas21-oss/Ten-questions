@@ -59,7 +59,7 @@ fun GameHud(
   stageNumber: Int,
   currentQuestionIndex: Int, // 0..9
   stageXp: Int,
-  attemptsLeft: Int, // 0..3
+  attemptsLeft: Int, // 0..5
   lastAwardedXp: Int?,
   onExit: () -> Unit,
   modifier: Modifier = Modifier
@@ -203,10 +203,10 @@ fun GameHud(
 
       Spacer(modifier = Modifier.width(16.dp))
 
-      // 3 Animated Hearts
+      // 5 Animated Hearts
       AnimatedHeartsIndicator(
         attemptsLeft = attemptsLeft,
-        maxAttempts = 3
+        maxAttempts = 5
       )
     }
   }
@@ -263,17 +263,18 @@ fun QuestionProgressTrack(
 }
 
 /**
- * Animated Hearts Indicator: provides dramatic visual feedback when attempts are lost.
+ * Animated Hearts Indicator: displays exactly 5 hearts and provides dramatic visual
+ * transition from alive (❤️) to broken (💔) when attempts are lost.
  */
 @Composable
 fun AnimatedHeartsIndicator(
   attemptsLeft: Int,
-  maxAttempts: Int = 3,
+  maxAttempts: Int = 5,
   modifier: Modifier = Modifier
 ) {
   Row(
     modifier = modifier,
-    horizontalArrangement = Arrangement.spacedBy(6.dp),
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
     verticalAlignment = Alignment.CenterVertically
   ) {
     for (heartIndex in 1..maxAttempts) {
@@ -295,10 +296,10 @@ private fun AnimatedHeart(
 
   LaunchedEffect(isAlive) {
     if (!isAlive) {
-      // Pop scale animation on death
-      scale.animateTo(1.35f, tween(120, easing = FastOutSlowInEasing))
-      scale.animateTo(0.9f, tween(160, easing = FastOutSlowInEasing))
-      scale.animateTo(1.0f, tween(100))
+      // Pop scale animation on lost life
+      scale.animateTo(1.4f, tween(110, easing = FastOutSlowInEasing))
+      scale.animateTo(0.85f, tween(150, easing = FastOutSlowInEasing))
+      scale.animateTo(1.0f, tween(90))
     } else {
       scale.snapTo(1f)
     }
@@ -307,20 +308,39 @@ private fun AnimatedHeart(
   Box(
     modifier = Modifier
       .scale(scale.value)
-      .size(26.dp),
+      .size(22.dp)
+      .testTag("game_heart_$index"),
     contentAlignment = Alignment.Center
   ) {
-    Icon(
-      imageVector = if (isAlive) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
-      contentDescription = "Attempt $index",
-      tint = if (isAlive) Color(0xFFEF4444) else Color(0xFF475569),
-      modifier = Modifier
-        .size(if (isAlive) 24.dp else 20.dp)
-        .then(
-          if (isAlive) {
-            Modifier.shadow(elevation = 6.dp, shape = CircleShape, spotColor = Color(0xFFEF4444))
-          } else Modifier
+    if (isAlive) {
+      // Full active heart ❤️
+      Icon(
+        imageVector = Icons.Default.Favorite,
+        contentDescription = "Attempt $index (Active)",
+        tint = Color(0xFFEF4444),
+        modifier = Modifier
+          .size(20.dp)
+          .shadow(elevation = 6.dp, shape = CircleShape, spotColor = Color(0xFFEF4444))
+      )
+    } else {
+      // Broken heart 💔
+      Box(contentAlignment = Alignment.Center) {
+        Icon(
+          imageVector = Icons.Outlined.FavoriteBorder,
+          contentDescription = "Attempt $index (Broken)",
+          tint = Color(0xFF64748B),
+          modifier = Modifier.size(18.dp)
         )
-    )
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(14.dp)) {
+          drawLine(
+            color = Color(0xFFEF4444).copy(alpha = 0.85f),
+            start = androidx.compose.ui.geometry.Offset(x = size.width * 0.2f, y = size.height * 0.2f),
+            end = androidx.compose.ui.geometry.Offset(x = size.width * 0.8f, y = size.height * 0.8f),
+            strokeWidth = 2.dp.toPx(),
+            cap = androidx.compose.ui.graphics.StrokeCap.Round
+          )
+        }
+      }
+    }
   }
 }

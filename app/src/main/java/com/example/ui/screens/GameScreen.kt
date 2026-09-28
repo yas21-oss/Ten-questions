@@ -100,7 +100,7 @@ fun GameScreen(
         haptics.vibrateCorrect(isHapticEnabled)
       }
       previousQuestionIndex = state.currentQuestionIndex
-      previousAttemptsLeft = 3
+      previousAttemptsLeft = state.attemptsLeft
     }
   }
 

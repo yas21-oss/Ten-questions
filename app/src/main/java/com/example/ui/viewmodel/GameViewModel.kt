@@ -28,7 +28,7 @@ sealed class GameState {
     val stageNumber: Int,
     val questions: List<Question>,
     val currentQuestionIndex: Int, // 0..9
-    val attemptsLeft: Int, // 3 down to 0
+    val attemptsLeft: Int, // 5 down to 0
     val userInput: String,
     val stageAccumulatedXp: Int = 0, // 0..1000
     val lastAwardedXp: Int? = null,
@@ -87,7 +87,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         stageNumber = stageNumber,
         questions = questions,
         currentQuestionIndex = 0,
-        attemptsLeft = 3,
+        attemptsLeft = 5,
         userInput = "",
         stageAccumulatedXp = 0,
         lastAwardedXp = null,
@@ -179,7 +179,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         _gameState.update {
           currentState.copy(
             currentQuestionIndex = currentState.currentQuestionIndex + 1,
-            attemptsLeft = 3,
+            attemptsLeft = 5,
             userInput = "",
             stageAccumulatedXp = newAccumulatedXp,
             lastAwardedXp = earnedXp,
