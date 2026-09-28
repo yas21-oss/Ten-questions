@@ -60,6 +60,8 @@ class MainActivity : ComponentActivity() {
       val isDarkTheme by settingsViewModel.isDarkTheme.collectAsState()
       val currentLanguage by settingsViewModel.currentLanguage.collectAsState()
       val hasCompletedOnboarding by settingsViewModel.hasCompletedOnboarding.collectAsState()
+      val isSoundEnabled by settingsViewModel.isSoundEnabled.collectAsState()
+      val isHapticEnabled by settingsViewModel.isHapticEnabled.collectAsState()
 
       val currentUser by authViewModel.currentUser.collectAsState()
       val isAuthLoading by authViewModel.isLoading.collectAsState()
@@ -181,6 +183,8 @@ class MainActivity : ComponentActivity() {
                     GameScreen(
                       state = state,
                       language = currentLanguage,
+                      isSoundEnabled = isSoundEnabled,
+                      isHapticEnabled = isHapticEnabled,
                       onInputChange = { gameViewModel.updateInput(it) },
                       onSubmit = { gameViewModel.submitAnswer(currentUser) },
                       onExit = {
@@ -197,6 +201,8 @@ class MainActivity : ComponentActivity() {
                       stageTotalXp = state.stageTotalXp,
                       starsEarned = state.starsEarned,
                       language = currentLanguage,
+                      isSoundEnabled = isSoundEnabled,
+                      isHapticEnabled = isHapticEnabled,
                       onNextStage = {
                         val uid = currentUser?.uid ?: "guest_player"
                         gameViewModel.startStage(state.stageNumber + 1, currentLanguage, uid, isReplay = false)
@@ -216,6 +222,8 @@ class MainActivity : ComponentActivity() {
                       correctAnswers = state.correctAnswers,
                       explanation = state.explanation,
                       language = currentLanguage,
+                      isSoundEnabled = isSoundEnabled,
+                      isHapticEnabled = isHapticEnabled,
                       onRetryStage = {
                         val uid = currentUser?.uid ?: "guest_player"
                         gameViewModel.startStage(state.stageNumber, currentLanguage, uid, isReplay = false)
@@ -244,9 +252,6 @@ class MainActivity : ComponentActivity() {
               }
 
               AppScreen.SETTINGS -> {
-                val isSoundEnabled by settingsViewModel.isSoundEnabled.collectAsState()
-                val isHapticEnabled by settingsViewModel.isHapticEnabled.collectAsState()
-
                 BackHandler { currentScreen = AppScreen.MAIN_MENU }
 
                 SettingsScreen(
