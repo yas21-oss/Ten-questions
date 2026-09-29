@@ -4,10 +4,13 @@ on:
   push:
     branches:
       - main
-      - master
     paths-ignore:
       - '**.md'
       - '.gitignore'
+
+concurrency:
+  group: version-and-tag-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -105,32 +108,33 @@ jobs:
           CURRENT_CODE="${{ steps.read_version.outputs.version_code }}"
           echo "Current versionCode: $CURRENT_CODE"
 
-          # Find previous release tags matching v*.*.*
-          PREV_TAG=$(git tag -l "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1 || true)
+          git fetch --tags --force
+          MAX_PREV_CODE=0
+          FOUND_PREV=false
 
-          if [ -n "$PREV_TAG" ]; then
-            echo "Most recent release tag found: $PREV_TAG"
-
-            # Attempt to read previous versionCode from that tag's gradle.properties
-            PREV_CODE=$(git show "$PREV_TAG:gradle.properties" 2>/dev/null | grep -E '^[[:space:]]*appVersionCode[[:space:]]*=' | head -n1 | cut -d'=' -f2 | tr -d '[:space:]"' || true)
-
-            # Fallback to app/build.gradle.kts if previously defined there
-            if [ -z "$PREV_CODE" ]; then
-              PREV_CODE=$(git show "$PREV_TAG:app/build.gradle.kts" 2>/dev/null | grep -E '^[[:space:]]*versionCode[[:space:]]*=' | head -n1 | grep -o '[0-9]\+' || true)
+          # Iterate through all prior release tags to find the highest released versionCode
+          for tag in $(git tag -l "v[0-9]*.[0-9]*.[0-9]*"); do
+            CODE=$(git show "$tag:gradle.properties" 2>/dev/null | grep -E '^[[:space:]]*appVersionCode[[:space:]]*=' | head -n1 | cut -d'=' -f2 | tr -d '[:space:]"' || true)
+            if [ -z "$CODE" ]; then
+              CODE=$(git show "$tag:app/build.gradle.kts" 2>/dev/null | grep -E '^[[:space:]]*versionCode[[:space:]]*=' | head -n1 | grep -o '[0-9]\+' || true)
             fi
-
-            if [ -n "$PREV_CODE" ]; then
-              echo "Previous release versionCode: $PREV_CODE"
-              if [ "$CURRENT_CODE" -le "$PREV_CODE" ]; then
-                echo "::error::Current versionCode ($CURRENT_CODE) must be strictly greater than previous released versionCode ($PREV_CODE)."
-                exit 1
+            if [[ "$CODE" =~ ^[0-9]+$ ]]; then
+              FOUND_PREV=true
+              if [ "$CODE" -gt "$MAX_PREV_CODE" ]; then
+                MAX_PREV_CODE=$CODE
               fi
-              echo "versionCode progression check PASSED: $CURRENT_CODE > $PREV_CODE"
-            else
-              echo "Could not parse versionCode from previous tag $PREV_TAG. Skipping comparison."
             fi
+          done
+
+          if [ "$FOUND_PREV" = "true" ]; then
+            echo "Highest previous release versionCode found: $MAX_PREV_CODE"
+            if [ "$CURRENT_CODE" -le "$MAX_PREV_CODE" ]; then
+              echo "::error::Current versionCode ($CURRENT_CODE) must be strictly greater than previous released versionCode ($MAX_PREV_CODE)."
+              exit 1
+            fi
+            echo "versionCode progression check PASSED: $CURRENT_CODE > $MAX_PREV_CODE"
           else
-            echo "No prior release tags detected in repository. This will be the first release."
+            echo "No prior releases with versionCode detected. First release check PASSED: $CURRENT_CODE"
           fi
 
       - name: Create and push Git release tag

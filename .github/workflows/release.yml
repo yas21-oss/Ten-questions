@@ -26,7 +26,7 @@ jobs:
           VERSION_NAME="${TAG_NAME#v}"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
-          echo "Building release for tag: $TAG_NAME (version: $VERSION_NAME)"
+          echo "Starting official release build for: $TAG_NAME (appVersionName: $VERSION_NAME)"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -36,8 +36,6 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
 
       - name: Grant execute permissions for gradlew
         run: |
@@ -48,69 +46,57 @@ jobs:
       - name: Run Unit Tests
         run: |
           echo "=== Running Unit Tests ==="
-          if [ -x ./gradlew ]; then
-            ./gradlew :app:testDebugUnitTest --no-daemon
-          else
-            gradle :app:testDebugUnitTest --no-daemon
-          fi
+          ./gradlew :app:testDebugUnitTest --no-daemon
 
-      - name: Setup Keystore & Signing Credentials
+      - name: Verify Production Keystore Credentials
         id: setup_signing
         run: |
-          echo "=== Configuring Keystore ==="
+          echo "=== Verifying Production Signing Credentials ==="
           KEYSTORE_FILE="$GITHUB_WORKSPACE/my-upload-key.jks"
 
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "Using custom release keystore from GitHub Secrets..."
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_FILE"
-            echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
-            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> "$GITHUB_ENV"
-          elif [ -f "debug.keystore.base64" ]; then
-            echo "Generating release keystore with alias 'upload'..."
-            keytool -genkeypair -v -keystore "$KEYSTORE_FILE" \
-              -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass android -keypass android \
-              -dname "CN=Ten Questions,O=AI Studio,C=US"
-            echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
-            echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
-          else
-            echo "Generating fallback signing keystore..."
-            keytool -genkeypair -v -keystore "$KEYSTORE_FILE" \
-              -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass android -keypass android \
-              -dname "CN=Ten Questions,O=AI Studio,C=US"
-            echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
-            echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
+          # Strictly require permanent production signing secrets for official releases
+          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ] || [ -z "${{ secrets.STORE_PASSWORD }}" ] || [ -z "${{ secrets.KEY_PASSWORD }}" ]; then
+            echo "::error::Production release signing secrets are missing!"
+            echo "::error::To ensure consistent signatures and update compatibility across Android app releases,"
+            echo "::error::the following Repository Secrets must be configured in Settings > Secrets and variables > Actions:"
+            echo "::error::  1. KEYSTORE_BASE64 : Base64-encoded release keystore file (.jks/.keystore)"
+            echo "::error::  2. STORE_PASSWORD  : Keystore store password"
+            echo "::error::  3. KEY_PASSWORD    : Key password for alias 'upload'"
+            echo "::error::"
+            echo "::error::Release build aborted to prevent generating an ephemeral or incompatible signing key."
+            exit 1
           fi
+
+          echo "Decoding production signing keystore from secret..."
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_FILE"
+
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "Production signing credentials configured successfully."
 
       - name: Build Release APK
         run: |
           echo "=== Building Release APK ==="
-          if [ -x ./gradlew ]; then
-            ./gradlew :app:assembleRelease --no-daemon
-          else
-            gradle :app:assembleRelease --no-daemon
-          fi
+          ./gradlew :app:assembleRelease --no-daemon
 
       - name: Package Release Assets & Compute Checksum
         id: package_assets
         run: |
           TAG_NAME="${{ steps.release_info.outputs.tag_name }}"
+          VERSION_NAME="${{ steps.release_info.outputs.version_name }}"
           echo "Locating built APK..."
 
-          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f | head -n 1)
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
 
-          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
-            echo "::error::Release APK not found in app/build/outputs/apk/release/"
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::Expected release APK not found at $APK_PATH"
             exit 1
           fi
 
-          echo "Found APK: $APK_PATH"
-          RELEASE_APK="TenQuestions-${TAG_NAME}.apk"
-          CHECKSUM_FILE="TenQuestions-${TAG_NAME}.apk.sha256"
+          echo "Found release APK: $APK_PATH"
+          RELEASE_APK="TenQuestions-v${VERSION_NAME}-release.apk"
+          CHECKSUM_FILE="TenQuestions-v${VERSION_NAME}-release.apk.sha256"
 
           cp "$APK_PATH" "$RELEASE_APK"
           sha256sum "$RELEASE_APK" > "$CHECKSUM_FILE"
@@ -121,19 +107,19 @@ jobs:
           echo "apk_file=$RELEASE_APK" >> "$GITHUB_OUTPUT"
           echo "checksum_file=$CHECKSUM_FILE" >> "$GITHUB_OUTPUT"
 
-      - name: Generate Changelog & Release Notes
+      - name: Generate Changelog & Release Notes from Git History
         id: generate_notes
         run: |
           TAG_NAME="${{ steps.release_info.outputs.tag_name }}"
           VERSION_NAME="${{ steps.release_info.outputs.version_name }}"
           VERSION_CODE=$(grep -E '^[[:space:]]*appVersionCode[[:space:]]*=' gradle.properties | head -n1 | cut -d'=' -f2 | tr -d '[:space:]"')
           APK_FILE="${{ steps.package_assets.outputs.apk_file }}"
-          SHA256_HASH=$(cat "${{ steps.package_assets.outputs.checksum_file }}" | awk '{print $1}')
+          SHA256_HASH=$(awk '{print $1}' "${{ steps.package_assets.outputs.checksum_file }}")
 
-          # Find previous tag if any
+          # Find previous release tag if one exists
           PREV_TAG=$(git tag -l "v*" --sort=-v:refname | grep -v "^${TAG_NAME}$" | head -n 1 || true)
 
-          echo "Generating release notes comparing $PREV_TAG..$TAG_NAME..."
+          echo "Generating release notes comparing ${PREV_TAG:-first-commit}..$TAG_NAME..."
 
           cat << 'EOF' > release_notes.md
           ## 📱 Ten Questions Release __TAG_NAME__
@@ -147,7 +133,7 @@ jobs:
           ### 🚀 Changes in this Release
           EOF
 
-          # Replace template variables
+          # Replace template placeholders
           sed -i "s/__TAG_NAME__/${TAG_NAME}/g" release_notes.md
           sed -i "s/__VERSION_NAME__/${VERSION_NAME}/g" release_notes.md
           sed -i "s/__VERSION_CODE__/${VERSION_CODE}/g" release_notes.md
@@ -157,11 +143,16 @@ jobs:
           if [ -n "$PREV_TAG" ]; then
             echo "" >> release_notes.md
             echo "Commits since **${PREV_TAG}**:" >> release_notes.md
-            git log "${PREV_TAG}..HEAD" --pretty=format:"* %s ([%h](https://github.com/${{ github.repository }}/commit/%H)) - @%an" >> release_notes.md
+            COMMITS=$(git log "${PREV_TAG}..HEAD" --pretty=format:"* %s ([%h](https://github.com/${{ github.repository }}/commit/%H)) - @%an" || true)
+            if [ -n "$COMMITS" ]; then
+              echo "$COMMITS" >> release_notes.md
+            else
+              echo "* No code changes detected since $PREV_TAG." >> release_notes.md
+            fi
           else
             echo "" >> release_notes.md
             echo "Initial release commits:" >> release_notes.md
-            git log -n 25 --pretty=format:"* %s ([%h](https://github.com/${{ github.repository }}/commit/%H)) - @%an" >> release_notes.md
+            git log -n 50 --pretty=format:"* %s ([%h](https://github.com/${{ github.repository }}/commit/%H)) - @%an" >> release_notes.md
           fi
 
           echo "" >> release_notes.md
@@ -171,7 +162,7 @@ jobs:
 
           cat release_notes.md
 
-      - name: Publish GitHub Release
+      - name: Publish Official GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "Release ${{ steps.release_info.outputs.tag_name }}"
