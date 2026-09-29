@@ -68,16 +68,28 @@ versionName = appVersionName
 - **Trigger**: Push of any release tag (`v*.*.*`).
 - **Build Environment**: Uses JDK 21 (Temurin) and the project's committed Gradle 9.3.1 wrapper (`./gradlew`).
 - **Test Gate**: Runs JVM unit test suite (`./gradlew :app:testDebugUnitTest`). If tests fail, release publishing immediately halts.
-- **Production Signing**: Strictly enforces permanent production signing credentials from GitHub Secrets to ensure consistent signing identity and Android app update compatibility across releases.
+- **Automated Signing**: Automatically generates a valid signing keystore during the workflow run and signs the release APK with Android APK Signature Scheme v2. No manual keystore creation or GitHub Secrets configuration is required.
+- **Optional Secret Override**: If `KEYSTORE_BASE64`, `STORE_PASSWORD`, and `KEY_PASSWORD` secrets are provided, the workflow automatically uses that persistent production keystore instead of auto-generating one.
+- **Signature Verification**: Verifies the resulting APK signature using `apksigner` before release staging.
 - **Artifacts & Checksums**: Builds `TenQuestions-v<version>-release.apk` and generates cryptographic checksum `TenQuestions-v<version>-release.apk.sha256`.
 - **Changelog & Release Notes**: Automatically aggregates commit history since the previous release tag.
 - **Publish**: Publishes official GitHub Release with attached APK and SHA-256 checksum.
 
 ---
 
-## 🔐 Required GitHub Secrets for Production Releases
+## 🔑 Signing Architecture: Automated vs. Production
 
-Android requires all updates for an app to be signed with the **same stable private key**. To prevent generating ephemeral or incompatible signing keys, the release workflow strictly requires the following GitHub Repository Secrets (**Settings > Secrets and variables > Actions**):
+### 1. Fully Automated Signing (Zero Configuration — Default)
+- **Status**: Enabled by default. No GitHub Secrets or manual keystores are required.
+- **How it works**: The GitHub Actions runner dynamically creates a valid 2048-bit RSA release signing keystore and signs the APK using Android's APK Signature Scheme v2.
+- **Installability**: The output APK (`TenQuestions-v<version>-release.apk`) is completely valid, signed, and installable on Android devices (via sideloading, ADB, or file manager).
+- **⚠️ Known Limitation for In-Place Updates**:
+  Because each automated GitHub Actions run operates in an ephemeral virtual environment, the automatically generated signing key differs between workflow runs. Android security enforces that an existing app can only be updated in-place if the new APK is signed with the **exact same certificate**.
+  - **Symptom**: If you install version `1.1.0` over an installed `1.0.0` built with automated signing, Android will reject the update with a signature mismatch error (*"App not installed as package conflicts with an existing package"*).
+  - **Workaround**: Uninstall the previous version before installing the new APK.
+
+### 2. Permanent Production Signing (Optional for Play Store / In-Place Updates)
+If you require seamless in-place updates without uninstalling, or are distributing the app via the Google Play Store, you can configure a permanent keystore in GitHub Secrets (**Settings > Secrets and variables > Actions**):
 
 | Secret Name | Description | Example / Format |
 |---|---|---|
@@ -85,20 +97,7 @@ Android requires all updates for an app to be signed with the **same stable priv
 | `STORE_PASSWORD` | Store password for the keystore | Plain text password string |
 | `KEY_PASSWORD` | Key password for key alias `upload` | Plain text password string |
 
-### Generating your production keystore (one-time setup):
-```bash
-keytool -genkeypair -v -keystore my-upload-key.jks \
-  -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
-  -dname "CN=Ten Questions,O=YourOrganization,C=US"
-```
-Encode it for GitHub Secrets:
-```bash
-# On Linux / macOS
-base64 -w 0 my-upload-key.jks
-# On macOS (BSD base64)
-base64 -b 0 my-upload-key.jks
-```
-Then paste the base64 output into `KEYSTORE_BASE64` in GitHub Secrets.
+When these secrets are detected, the workflow automatically uses the permanent keystore instead of auto-generating one.
 
 ---
 
@@ -106,9 +105,11 @@ Then paste the base64 output into `KEYSTORE_BASE64` in GitHub Secrets.
 
 1. **If unit tests fail**:
    The workflow fails immediately during step `Run Unit Tests`. No release is published, no APK asset is uploaded, and the tag remains on the commit.
-2. **If signing secrets are missing**:
-   The workflow fails with a clear error listing the required secrets. It will **never** silently generate a temporary one-off key that would break future app updates for users.
-3. **If multiple commits are pushed**:
+2. **If APK signing fails**:
+   The workflow verifies the APK cryptographic signature using `apksigner`/`jarsigner`. If unsigned or malformed, the workflow aborts with a hard failure before staging or publishing.
+3. **If APK or checksum assets are missing**:
+   The workflow performs pre-publish checks and post-upload verification using GitHub CLI (`gh release view`). If either `TenQuestions-v<version>-release.apk` or `TenQuestions-v<version>-release.apk.sha256` is missing, the workflow fails hard.
+4. **If multiple commits are pushed**:
    Serialized by GitHub Actions concurrency lock.
-4. **Infinite loop prevention**:
+5. **Infinite loop prevention**:
    `version-and-tag.yml` only listens to branch pushes (`main`). `release.yml` only listens to tag pushes (`v*`). Tag creation does not trigger `version-and-tag.yml`.

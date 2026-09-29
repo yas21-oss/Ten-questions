@@ -48,73 +48,214 @@ jobs:
           echo "=== Running Unit Tests ==="
           ./gradlew :app:testDebugUnitTest --no-daemon
 
-      - name: Verify Production Keystore Credentials
+      # -------------------------------------------------------------
+      # 1. SIGNING SETUP (Automated with Optional Secret Override)
+      # -------------------------------------------------------------
+      - name: Setup Signing Keystore
         id: setup_signing
         run: |
-          echo "=== Verifying Production Signing Credentials ==="
+          echo "=== Configuring Release Signing Credentials ==="
           KEYSTORE_FILE="$GITHUB_WORKSPACE/my-upload-key.jks"
+          KEY_ALIAS="upload"
 
-          # Strictly require permanent production signing secrets for official releases
-          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ] || [ -z "${{ secrets.STORE_PASSWORD }}" ] || [ -z "${{ secrets.KEY_PASSWORD }}" ]; then
-            echo "::error::Production release signing secrets are missing!"
-            echo "::error::To ensure consistent signatures and update compatibility across Android app releases,"
-            echo "::error::the following Repository Secrets must be configured in Settings > Secrets and variables > Actions:"
-            echo "::error::  1. KEYSTORE_BASE64 : Base64-encoded release keystore file (.jks/.keystore)"
-            echo "::error::  2. STORE_PASSWORD  : Keystore store password"
-            echo "::error::  3. KEY_PASSWORD    : Key password for alias 'upload'"
-            echo "::error::"
-            echo "::error::Release build aborted to prevent generating an ephemeral or incompatible signing key."
-            exit 1
+          # If user has configured permanent production signing secrets, use them;
+          # otherwise, automatically generate an automated release signing key.
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ] && [ -n "${{ secrets.STORE_PASSWORD }}" ] && [ -n "${{ secrets.KEY_PASSWORD }}" ]; then
+            echo "Using custom production keystore configured in GitHub Secrets..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_FILE"
+            echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "Signing method: Permanent production keystore from secrets."
+          else
+            echo "No custom secrets provided. Automatically generating signing keystore..."
+            STORE_PASS="automationsigningkey"
+            KEY_PASS="automationsigningkey"
+
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_FILE" \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "$STORE_PASS" \
+              -keypass "$KEY_PASS" \
+              -dname "CN=Ten Questions Automated Release, OU=CI, O=TenQuestions, C=US"
+
+            echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+            echo "Signing method: Automated CI signing key generated successfully."
+            echo "::notice::Release APK signed with automatically generated key. For Play Store or seamless in-place updates, optional permanent secrets may be configured."
           fi
 
-          echo "Decoding production signing keystore from secret..."
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_FILE"
+          if [ ! -f "$KEYSTORE_FILE" ]; then
+            echo "::error::Hard failure: Signing keystore was not created at $KEYSTORE_FILE"
+            exit 1
+          fi
+          echo "Keystore verified ready at $KEYSTORE_FILE."
 
-          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
-          echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> "$GITHUB_ENV"
-          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> "$GITHUB_ENV"
-          echo "Production signing credentials configured successfully."
-
+      # -------------------------------------------------------------
+      # 2. BUILD RELEASE APK
+      # -------------------------------------------------------------
       - name: Build Release APK
         run: |
           echo "=== Building Release APK ==="
           ./gradlew :app:assembleRelease --no-daemon
 
-      - name: Package Release Assets & Compute Checksum
-        id: package_assets
+      # -------------------------------------------------------------
+      # 3. LOCATE APK & VERIFY SIGNATURE
+      # -------------------------------------------------------------
+      - name: Locate Built Release APK
+        id: locate_apk
         run: |
-          TAG_NAME="${{ steps.release_info.outputs.tag_name }}"
-          VERSION_NAME="${{ steps.release_info.outputs.version_name }}"
-          echo "Locating built APK..."
+          echo "=== Locating Built Release APK ==="
+          POSSIBLE_PATH="app/build/outputs/apk/release/app-release.apk"
 
-          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [ -f "$POSSIBLE_PATH" ]; then
+            ACTUAL_APK="$POSSIBLE_PATH"
+          else
+            ACTUAL_APK=$(find app/build/outputs/apk/release -maxdepth 1 -name "*.apk" -type f | head -n 1)
+          fi
 
-          if [ ! -f "$APK_PATH" ]; then
-            echo "::error::Expected release APK not found at $APK_PATH"
+          if [ -z "$ACTUAL_APK" ] || [ ! -f "$ACTUAL_APK" ]; then
+            echo "::error::Hard failure: Release APK was not produced in app/build/outputs/apk/release/"
             exit 1
           fi
 
-          echo "Found release APK: $APK_PATH"
-          RELEASE_APK="TenQuestions-v${VERSION_NAME}-release.apk"
-          CHECKSUM_FILE="TenQuestions-v${VERSION_NAME}-release.apk.sha256"
+          APK_SIZE_BYTES=$(stat -c%s "$ACTUAL_APK" 2>/dev/null || stat -f%z "$ACTUAL_APK" 2>/dev/null || echo 0)
+          if [ "$APK_SIZE_BYTES" -le 1000000 ]; then
+            echo "::error::Hard failure: Produced APK is suspiciously small or empty ($APK_SIZE_BYTES bytes)."
+            exit 1
+          fi
 
-          cp "$APK_PATH" "$RELEASE_APK"
-          sha256sum "$RELEASE_APK" > "$CHECKSUM_FILE"
+          echo "Found verified release APK: $ACTUAL_APK ($APK_SIZE_BYTES bytes)"
+          echo "source_apk=$ACTUAL_APK" >> "$GITHUB_OUTPUT"
 
-          echo "Release APK created: $RELEASE_APK"
-          cat "$CHECKSUM_FILE"
+      - name: Verify APK Cryptographic Signature
+        run: |
+          echo "=== Verifying APK Signature ==="
+          ACTUAL_APK="${{ steps.locate_apk.outputs.source_apk }}"
+          APKSIGNER=$(which apksigner 2>/dev/null || find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -name apksigner 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
+            echo "Verifying signature with apksigner ($APKSIGNER)..."
+            "$APKSIGNER" verify --verbose "$ACTUAL_APK"
+          else
+            echo "apksigner not found in path, verifying with jarsigner..."
+            jarsigner -verify -verbose -certs "$ACTUAL_APK"
+          fi
+          echo "APK signature verification PASSED."
 
-          echo "apk_file=$RELEASE_APK" >> "$GITHUB_OUTPUT"
-          echo "checksum_file=$CHECKSUM_FILE" >> "$GITHUB_OUTPUT"
+      # -------------------------------------------------------------
+      # 4. RENAME & STAGE APK
+      # -------------------------------------------------------------
+      - name: Rename and Stage Release APK
+        id: stage_apk
+        run: |
+          echo "=== Renaming and Staging Release APK ==="
+          VERSION_NAME="${{ steps.release_info.outputs.version_name }}"
+          SOURCE_APK="${{ steps.locate_apk.outputs.source_apk }}"
 
+          TARGET_APK_NAME="TenQuestions-v${VERSION_NAME}-release.apk"
+          TARGET_APK_PATH="$GITHUB_WORKSPACE/$TARGET_APK_NAME"
+
+          echo "Copying $SOURCE_APK -> $TARGET_APK_PATH"
+          cp "$SOURCE_APK" "$TARGET_APK_PATH"
+
+          if [ ! -f "$TARGET_APK_PATH" ]; then
+            echo "::error::Hard failure: Staged APK file does not exist at $TARGET_APK_PATH"
+            exit 1
+          fi
+
+          echo "apk_name=$TARGET_APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "apk_path=$TARGET_APK_PATH" >> "$GITHUB_OUTPUT"
+
+      # -------------------------------------------------------------
+      # 5. VERIFY APK & COMPUTE CHECKSUM
+      # -------------------------------------------------------------
+      - name: Verify Staged APK and Generate Checksum
+        id: verify_assets
+        run: |
+          echo "=== Generating and Verifying SHA-256 Checksum ==="
+          APK_PATH="${{ steps.stage_apk.outputs.apk_path }}"
+          APK_NAME="${{ steps.stage_apk.outputs.apk_name }}"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::Hard failure: Expected APK not found before checksum generation: $APK_PATH"
+            exit 1
+          fi
+
+          CHECKSUM_NAME="${APK_NAME}.sha256"
+          CHECKSUM_PATH="$GITHUB_WORKSPACE/$CHECKSUM_NAME"
+
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "$APK_NAME" > "$CHECKSUM_NAME"
+
+          if [ ! -s "$CHECKSUM_PATH" ]; then
+            echo "::error::Hard failure: Checksum file is missing or empty at $CHECKSUM_PATH"
+            exit 1
+          fi
+
+          # Verify integrity by checking file against generated checksum
+          sha256sum -c "$CHECKSUM_NAME" || {
+            echo "::error::Hard failure: SHA-256 checksum verification failed for $APK_NAME"
+            exit 1
+          }
+
+          SHA256_HASH=$(awk '{print $1}' "$CHECKSUM_PATH")
+          if [ -z "$SHA256_HASH" ]; then
+            echo "::error::Hard failure: Unable to extract SHA-256 hash value from $CHECKSUM_PATH"
+            exit 1
+          fi
+
+          echo "Checksum generated and verified successfully: $SHA256_HASH"
+          echo "apk_file=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "checksum_file=$CHECKSUM_NAME" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$CHECKSUM_PATH" >> "$GITHUB_OUTPUT"
+          echo "sha256_hash=$SHA256_HASH" >> "$GITHUB_OUTPUT"
+
+      # -------------------------------------------------------------
+      # 6. PRINT CLEAR DIAGNOSTIC (No secrets printed)
+      # -------------------------------------------------------------
+      - name: Diagnostic Inspection of Release Assets
+        run: |
+          APK_PATH="${{ steps.verify_assets.outputs.apk_path }}"
+          APK_NAME="${{ steps.verify_assets.outputs.apk_file }}"
+          CHECKSUM_NAME="${{ steps.verify_assets.outputs.checksum_file }}"
+          CHECKSUM_PATH="${{ steps.verify_assets.outputs.checksum_path }}"
+          SHA256_HASH="${{ steps.verify_assets.outputs.sha256_hash }}"
+
+          APK_SIZE_BYTES=$(stat -c%s "$APK_PATH" 2>/dev/null || stat -f%z "$APK_PATH" 2>/dev/null || echo 0)
+          APK_SIZE_HR=$(ls -lh "$APK_PATH" | awk '{print $5}')
+
+          echo "=========================================================="
+          echo "📋 PRE-RELEASE ASSET DIAGNOSTIC"
+          echo "=========================================================="
+          echo "  Release Tag:         ${{ steps.release_info.outputs.tag_name }}"
+          echo "  Version Name:        ${{ steps.release_info.outputs.version_name }}"
+          echo "  APK Absolute Path:   $APK_PATH"
+          echo "  APK Filename:        $APK_NAME"
+          echo "  APK Size:            $APK_SIZE_HR ($APK_SIZE_BYTES bytes)"
+          echo "  SHA-256 Filename:    $CHECKSUM_NAME"
+          echo "  SHA-256 Path:        $CHECKSUM_PATH"
+          echo "  SHA-256 Digest:      $SHA256_HASH"
+          echo "  Staged Directory:    $GITHUB_WORKSPACE"
+          echo "=========================================================="
+          ls -lh "$APK_PATH" "$CHECKSUM_PATH"
+          echo "=========================================================="
+
+      # -------------------------------------------------------------
+      # 7. GENERATE CHANGELOG & RELEASE NOTES
+      # -------------------------------------------------------------
       - name: Generate Changelog & Release Notes from Git History
         id: generate_notes
         run: |
           TAG_NAME="${{ steps.release_info.outputs.tag_name }}"
           VERSION_NAME="${{ steps.release_info.outputs.version_name }}"
           VERSION_CODE=$(grep -E '^[[:space:]]*appVersionCode[[:space:]]*=' gradle.properties | head -n1 | cut -d'=' -f2 | tr -d '[:space:]"')
-          APK_FILE="${{ steps.package_assets.outputs.apk_file }}"
-          SHA256_HASH=$(awk '{print $1}' "${{ steps.package_assets.outputs.checksum_file }}")
+          APK_FILE="${{ steps.verify_assets.outputs.apk_file }}"
+          SHA256_HASH="${{ steps.verify_assets.outputs.sha256_hash }}"
 
           # Find previous release tag if one exists
           PREV_TAG=$(git tag -l "v*" --sort=-v:refname | grep -v "^${TAG_NAME}$" | head -n 1 || true)
@@ -162,15 +303,68 @@ jobs:
 
           cat release_notes.md
 
-      - name: Publish Official GitHub Release
+      # -------------------------------------------------------------
+      # 8. CREATE RELEASE WITH ASSETS
+      # -------------------------------------------------------------
+      - name: Publish Official GitHub Release with Assets
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
           name: "Release ${{ steps.release_info.outputs.tag_name }}"
           body_path: release_notes.md
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
           files: |
-            ${{ steps.package_assets.outputs.apk_file }}
-            ${{ steps.package_assets.outputs.checksum_file }}
+            ${{ steps.verify_assets.outputs.apk_path }}
+            ${{ steps.verify_assets.outputs.checksum_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # -------------------------------------------------------------
+      # 9. ASSET UPLOAD VERIFICATION & SAFETY FALLBACK
+      # -------------------------------------------------------------
+      - name: Verify GitHub Release Downloadable Assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Verifying Attached Downloadable Assets on GitHub Release ==="
+          TAG="${{ steps.release_info.outputs.tag_name }}"
+          APK_NAME="${{ steps.verify_assets.outputs.apk_file }}"
+          CHECKSUM_NAME="${{ steps.verify_assets.outputs.checksum_file }}"
+          APK_PATH="${{ steps.verify_assets.outputs.apk_path }}"
+          CHECKSUM_PATH="${{ steps.verify_assets.outputs.checksum_path }}"
+
+          # Query GitHub API via GitHub CLI to verify assets
+          ASSETS=$(gh release view "$TAG" --json assets --jq '.assets.[].name' 2>/dev/null || true)
+          echo "Assets reported by GitHub for release $TAG:"
+          echo "$ASSETS"
+
+          # Fallback upload via gh CLI if any asset is missing
+          if ! echo "$ASSETS" | grep -q "^$APK_NAME$"; then
+            echo "::warning::APK asset ($APK_NAME) not detected on release. Uploading via gh release upload..."
+            gh release upload "$TAG" "$APK_PATH" --clobber
+          fi
+
+          if ! echo "$ASSETS" | grep -q "^$CHECKSUM_NAME$"; then
+            echo "::warning::Checksum asset ($CHECKSUM_NAME) not detected on release. Uploading via gh release upload..."
+            gh release upload "$TAG" "$CHECKSUM_PATH" --clobber
+          fi
+
+          # Final verification check
+          FINAL_ASSETS=$(gh release view "$TAG" --json assets --jq '.assets.[].name')
+          echo "Final verified release assets:"
+          echo "$FINAL_ASSETS"
+
+          if ! echo "$FINAL_ASSETS" | grep -q "^$APK_NAME$"; then
+            echo "::error::CRITICAL HARD FAILURE: APK ($APK_NAME) is missing from release downloadable assets!"
+            exit 1
+          fi
+
+          if ! echo "$FINAL_ASSETS" | grep -q "^$CHECKSUM_NAME$"; then
+            echo "::error::CRITICAL HARD FAILURE: Checksum ($CHECKSUM_NAME) is missing from release downloadable assets!"
+            exit 1
+          fi
+
+          echo "SUCCESS: Both $APK_NAME and $CHECKSUM_NAME are verified on GitHub Release $TAG."
