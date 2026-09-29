@@ -16,8 +16,13 @@ android {
     applicationId = "com.aistudio.tenquestions.qmgzlr"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+
+    // Read application version from gradle.properties (single source of truth)
+    val appVersionName: String = providers.gradleProperty("appVersionName").getOrElse("1.0.0")
+    val appVersionCode: Int = providers.gradleProperty("appVersionCode").map { it.toInt() }.getOrElse(1)
+
+    versionCode = appVersionCode
+    versionName = appVersionName
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -131,3 +136,14 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+tasks.register("printAppVersion") {
+  description = "Prints the current versionName and versionCode for CI/CD"
+  val vName = android.defaultConfig.versionName ?: "1.0.0"
+  val vCode = android.defaultConfig.versionCode ?: 1
+  doLast {
+    println("APP_VERSION_NAME=$vName")
+    println("APP_VERSION_CODE=$vCode")
+  }
+}
+
