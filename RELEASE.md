@@ -88,16 +88,62 @@ versionName = appVersionName
   - **Symptom**: If you install version `1.1.0` over an installed `1.0.0` built with automated signing, Android will reject the update with a signature mismatch error (*"App not installed as package conflicts with an existing package"*).
   - **Workaround**: Uninstall the previous version before installing the new APK.
 
-### 2. Permanent Production Signing (Optional for Play Store / In-Place Updates)
-If you require seamless in-place updates without uninstalling, or are distributing the app via the Google Play Store, you can configure a permanent keystore in GitHub Secrets (**Settings > Secrets and variables > Actions**):
+### 2. Permanent Production Signing Setup (Seamless In-Place Updates & Play Store)
+To enable seamless updates where users can install new versions without uninstalling previous builds, configure a permanent signing keystore in GitHub Secrets (**Repository Settings > Secrets and variables > Actions**).
 
-| Secret Name | Description | Example / Format |
-|---|---|---|
-| `KEYSTORE_BASE64` | Base64-encoded upload keystore (`.jks` or `.keystore`) containing alias `upload` | `base64 -w 0 my-upload-key.jks` |
-| `STORE_PASSWORD` | Store password for the keystore | Plain text password string |
-| `KEY_PASSWORD` | Key password for key alias `upload` | Plain text password string |
+#### Step A: Generate the Keystore (e.g. from Termux on Android or a Linux/macOS terminal)
+If using **Termux on your Android phone**, ensure OpenJDK is installed:
+```bash
+pkg install openjdk-21 -y
+```
 
-When these secrets are detected, the workflow automatically uses the permanent keystore instead of auto-generating one.
+Run this command to create your permanent keystore:
+```bash
+keytool -genkeypair -v \
+  -keystore my-upload-key.jks \
+  -alias upload \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 10000 \
+  -dname "CN=Ten Questions, O=TenQuestions, C=US"
+```
+*Note: Keytool will prompt you to enter and confirm your password. Choose a strong password and remember it.*
+
+#### Step B: Convert Keystore to Base64
+Run this command to convert the keystore into a single Base64 string without line breaks:
+```bash
+base64 -w 0 my-upload-key.jks > keystore_base64.txt
+```
+*(On macOS: `base64 -i my-upload-key.jks -o keystore_base64.txt`)*
+
+Display the Base64 string to copy it:
+```bash
+cat keystore_base64.txt
+```
+*(In Termux with Termux:API, you can also copy directly to clipboard with: `base64 -w 0 my-upload-key.jks | termux-clipboard-set`)*
+
+#### Step C: Add the Three GitHub Actions Secrets
+In your GitHub repository, navigate to **Settings > Secrets and variables > Actions > New repository secret** and add:
+
+1. **`KEYSTORE_BASE64`**: The exact Base64 string from `keystore_base64.txt`.
+2. **`STORE_PASSWORD`**: The exact keystore password you entered when creating the keystore.
+3. **`KEY_PASSWORD`**: The exact key password for alias `upload` (the same password if you pressed Enter at the prompt).
+
+#### Step D: Important Security Rules
+- **NEVER** commit `my-upload-key.jks` or `keystore_base64.txt` to the Git repository (they are ignored by `.gitignore`).
+- **Store a safe backup** of `my-upload-key.jks` in a secure location (e.g., password manager, encrypted cloud drive). If you lose this key, future app updates cannot be installed without uninstalling the previous version.
+- Once configured, all future GitHub Actions release runs will permanently use this keystore and will never replace it.
+
+---
+
+### 📋 Setup Checklist
+- [ ] Create keystore
+- [ ] Convert to Base64
+- [ ] Add `KEYSTORE_BASE64`
+- [ ] Add `STORE_PASSWORD`
+- [ ] Add `KEY_PASSWORD`
+- [ ] Run first release
+- [ ] Verify APK asset
 
 ---
 
