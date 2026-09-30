@@ -18,6 +18,7 @@ local.properties
 debug.keystore
 *.jks
 *.keystore
+*.apk
 my-upload-key.jks
 keystore_base64.txt
 GITHUB_SECRETS.txt

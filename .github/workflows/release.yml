@@ -8,6 +8,12 @@ on:
       - '**.md'
       - '.gitignore'
   workflow_dispatch:
+    inputs:
+      force_upload:
+        description: 'Force build and upload APK assets even if release exists'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -109,23 +115,38 @@ jobs:
           fi
 
           RELEASE_EXISTS=false
+          HAS_APK=false
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             RELEASE_EXISTS=true
             echo "GitHub Release for '$TAG_NAME' already exists."
+
+            # Query existing release assets
+            EXISTING_ASSETS=$(gh release view "$TAG_NAME" --json assets --jq '.assets.[].name' 2>/dev/null || true)
+            echo "Existing assets on GitHub Release '$TAG_NAME':"
+            echo "$EXISTING_ASSETS"
+
+            if echo "$EXISTING_ASSETS" | grep -qE '^TenQuestions-v.*-release\.apk$'; then
+              HAS_APK=true
+              echo "Release already contains the APK asset."
+            else
+              echo "Release exists on GitHub but is MISSING the APK file! Will build and attach APK."
+            fi
           else
             echo "No GitHub Release found for '$TAG_NAME'."
           fi
 
-          # If the GitHub Release already exists with published assets, halt gracefully without duplicate release
-          if [ "$RELEASE_EXISTS" = "true" ]; then
-            echo "Release '$TAG_NAME' is already published on GitHub. Gracefully stopping pipeline to prevent duplicates."
+          FORCE_UPLOAD="${{ github.event.inputs.force_upload }}"
+
+          # If the GitHub Release already exists AND already has the APK asset, halt gracefully to prevent duplicate runs
+          if [ "$RELEASE_EXISTS" = "true" ] && [ "$HAS_APK" = "true" ] && [ "$FORCE_UPLOAD" != "true" ]; then
+            echo "Release '$TAG_NAME' is already published on GitHub with full APK assets. Gracefully stopping pipeline."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             echo "tag_exists=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # If the tag exists but no release exists, or neither exists, proceed to release
-          echo "Proceeding with release pipeline for '$TAG_NAME'."
+          # If the release doesn't exist, OR exists but is missing the APK asset, proceed to build and attach APK
+          echo "Proceeding with release pipeline for '$TAG_NAME' (Release exists: $RELEASE_EXISTS, Has APK: $HAS_APK, Force: $FORCE_UPLOAD)."
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
 

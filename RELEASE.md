@@ -59,9 +59,10 @@ The release system uses a **single, deterministic two-stage pipeline** that trig
 2. **Version Extraction**: Extracts `appVersionName` and `appVersionCode` from `gradle.properties`.
 3. **SemVer & Code Validation**: Enforces strict SemVer syntax (`MAJOR.MINOR.PATCH`) and positive integer `versionCode`.
 4. **Duplicate Protection & Recovery**:
-   - Queries `refs/tags/v<versionName>` and checks GitHub API (`gh release view`) for published releases.
-   - If the GitHub Release for this version already exists: gracefully exits to prevent duplicate releases.
-   - If the tag exists but no GitHub Release was published (e.g. from a previously untriggered workflow): proceeds to build and publish the release.
+   - Queries `refs/tags/v<versionName>` and checks GitHub API (`gh release view`) for published releases and their attached assets.
+   - If the GitHub Release for this version already exists **AND contains the APK artifact**: gracefully exits to prevent redundant runs.
+   - If the release exists **but is missing the APK artifact** (e.g. created empty or aborted previously): automatically proceeds to build and attach the APK and checksum to the release.
+   - If the tag exists but no GitHub Release was published: proceeds to build and publish the release.
    - If neither exists: verifies `versionCode` strictly increases over previous releases, then creates and pushes annotated Git tag `v<versionName>`.
 
 ### Stage 2: `release` (Build, Test, Sign & Publish)
