@@ -1,32 +1,199 @@
-name: Build & Publish Release
+name: Release Pipeline
 
 on:
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v*'
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build & Publish APK Release
+  version_and_tag:
+    name: Version, Validate & Tag
     runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.tag_check.outputs.should_release }}
+      tag_name: ${{ steps.read_version.outputs.tag_name }}
+      version_name: ${{ steps.read_version.outputs.version_name }}
+      version_code: ${{ steps.read_version.outputs.version_code }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Extract Release Tag and Version
-        id: release_info
+      - name: Read version from gradle.properties
+        id: read_version
         run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          VERSION_NAME="${TAG_NAME#v}"
-          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "=== Reading Version ==="
+          if [ ! -f gradle.properties ]; then
+            echo "::error::gradle.properties not found in repository root."
+            exit 1
+          fi
+
+          VERSION_NAME=$(grep -E '^[[:space:]]*appVersionName[[:space:]]*=' gradle.properties | head -n1 | cut -d'=' -f2 | tr -d '[:space:]"')
+          VERSION_CODE=$(grep -E '^[[:space:]]*appVersionCode[[:space:]]*=' gradle.properties | head -n1 | cut -d'=' -f2 | tr -d '[:space:]"')
+
+          if [ -z "$VERSION_NAME" ]; then
+            echo "::error::appVersionName property missing in gradle.properties."
+            exit 1
+          fi
+
+          if [ -z "$VERSION_CODE" ]; then
+            echo "::error::appVersionCode property missing in gradle.properties."
+            exit 1
+          fi
+
+          echo "Detected appVersionName: $VERSION_NAME"
+          echo "Detected appVersionCode: $VERSION_CODE"
+
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
-          echo "Starting official release build for: $TAG_NAME (appVersionName: $VERSION_NAME)"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag_name=v$VERSION_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Semantic Version format
+        run: |
+          VERSION_NAME="${{ steps.read_version.outputs.version_name }}"
+          echo "Validating semantic version format for: '$VERSION_NAME'"
+
+          SEMVER_REGEX='^[0-9]+\.[0-9]+\.[0-9]+$'
+
+          if [[ ! "$VERSION_NAME" =~ $SEMVER_REGEX ]]; then
+            echo "::error::Invalid versionName: '$VERSION_NAME'."
+            echo "::error::Version must strictly follow Semantic Versioning (MAJOR.MINOR.PATCH), e.g., '1.0.0', '1.2.0', '2.10.5'."
+            exit 1
+          fi
+
+          echo "Semantic version validation PASSED: $VERSION_NAME"
+
+      - name: Validate versionCode is positive integer
+        run: |
+          VERSION_CODE="${{ steps.read_version.outputs.version_code }}"
+          echo "Validating versionCode: '$VERSION_CODE'"
+
+          POSITIVE_INT_REGEX='^[1-9][0-9]*$'
+
+          if [[ ! "$VERSION_CODE" =~ $POSITIVE_INT_REGEX ]]; then
+            echo "::error::Invalid versionCode: '$VERSION_CODE'."
+            echo "::error::versionCode must be a positive integer greater than 0."
+            exit 1
+          fi
+
+          echo "versionCode positive integer validation PASSED: $VERSION_CODE"
+
+      - name: Check if tag and release already exist (Duplicate Protection & Recovery)
+        id: tag_check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.read_version.outputs.tag_name }}"
+          echo "Checking tag and release status for '$TAG_NAME'..."
+
+          git fetch --tags --force
+
+          TAG_EXISTS=false
+          if git rev-parse "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            TAG_EXISTS=true
+            echo "Tag '$TAG_NAME' exists in git."
+          else
+            echo "Tag '$TAG_NAME' does not exist in git."
+          fi
+
+          RELEASE_EXISTS=false
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
+            echo "GitHub Release for '$TAG_NAME' already exists."
+          else
+            echo "No GitHub Release found for '$TAG_NAME'."
+          fi
+
+          # If the GitHub Release already exists with published assets, halt gracefully without duplicate release
+          if [ "$RELEASE_EXISTS" = "true" ]; then
+            echo "Release '$TAG_NAME' is already published on GitHub. Gracefully stopping pipeline to prevent duplicates."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If the tag exists but no release exists, or neither exists, proceed to release
+          echo "Proceeding with release pipeline for '$TAG_NAME'."
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
+
+      - name: Validate versionCode is strictly greater than previous releases
+        if: steps.tag_check.outputs.tag_exists == 'false'
+        run: |
+          CURRENT_CODE="${{ steps.read_version.outputs.version_code }}"
+          echo "Current versionCode: $CURRENT_CODE"
+
+          git fetch --tags --force
+          MAX_PREV_CODE=0
+          FOUND_PREV=false
+
+          # Iterate through all prior release tags to find the highest released versionCode
+          for tag in $(git tag -l "v[0-9]*.[0-9]*.[0-9]*"); do
+            CODE=$(git show "$tag:gradle.properties" 2>/dev/null | grep -E '^[[:space:]]*appVersionCode[[:space:]]*=' | head -n1 | cut -d'=' -f2 | tr -d '[:space:]"' || true)
+            if [ -z "$CODE" ]; then
+              CODE=$(git show "$tag:app/build.gradle.kts" 2>/dev/null | grep -E '^[[:space:]]*versionCode[[:space:]]*=' | head -n1 | grep -o '[0-9]\+' || true)
+            fi
+            if [[ "$CODE" =~ ^[0-9]+$ ]]; then
+              FOUND_PREV=true
+              if [ "$CODE" -gt "$MAX_PREV_CODE" ]; then
+                MAX_PREV_CODE=$CODE
+              fi
+            fi
+          done
+
+          if [ "$FOUND_PREV" = "true" ]; then
+            echo "Highest previous release versionCode found: $MAX_PREV_CODE"
+            if [ "$CURRENT_CODE" -le "$MAX_PREV_CODE" ]; then
+              echo "::error::Current versionCode ($CURRENT_CODE) must be strictly greater than previous released versionCode ($MAX_PREV_CODE)."
+              exit 1
+            fi
+            echo "versionCode progression check PASSED: $CURRENT_CODE > $MAX_PREV_CODE"
+          else
+            echo "No prior releases with versionCode detected. First release check PASSED: $CURRENT_CODE"
+          fi
+
+      - name: Create and push Git release tag
+        if: steps.tag_check.outputs.tag_exists == 'false'
+        run: |
+          TAG_NAME="${{ steps.read_version.outputs.tag_name }}"
+          VERSION_NAME="${{ steps.read_version.outputs.version_name }}"
+          VERSION_CODE="${{ steps.read_version.outputs.version_code }}"
+
+          echo "Configuring git credentials..."
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          echo "Creating annotated tag: $TAG_NAME"
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME (versionCode: $VERSION_CODE)"
+
+          echo "Pushing tag '$TAG_NAME' to origin..."
+          git push origin "$TAG_NAME"
+
+          echo "Tag $TAG_NAME pushed successfully."
+
+  release:
+    name: Build & Publish APK Release
+    needs: version_and_tag
+    if: needs.version_and_tag.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository at release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version_and_tag.outputs.tag_name }}
+          fetch-depth: 0
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -153,7 +320,7 @@ jobs:
         id: stage_apk
         run: |
           echo "=== Renaming and Staging Release APK ==="
-          VERSION_NAME="${{ steps.release_info.outputs.version_name }}"
+          VERSION_NAME="${{ needs.version_and_tag.outputs.version_name }}"
           SOURCE_APK="${{ steps.locate_apk.outputs.source_apk }}"
 
           TARGET_APK_NAME="TenQuestions-v${VERSION_NAME}-release.apk"
@@ -232,8 +399,8 @@ jobs:
           echo "=========================================================="
           echo "📋 PRE-RELEASE ASSET DIAGNOSTIC"
           echo "=========================================================="
-          echo "  Release Tag:         ${{ steps.release_info.outputs.tag_name }}"
-          echo "  Version Name:        ${{ steps.release_info.outputs.version_name }}"
+          echo "  Release Tag:         ${{ needs.version_and_tag.outputs.tag_name }}"
+          echo "  Version Name:        ${{ needs.version_and_tag.outputs.version_name }}"
           echo "  APK Absolute Path:   $APK_PATH"
           echo "  APK Filename:        $APK_NAME"
           echo "  APK Size:            $APK_SIZE_HR ($APK_SIZE_BYTES bytes)"
@@ -251,9 +418,9 @@ jobs:
       - name: Generate Changelog & Release Notes from Git History
         id: generate_notes
         run: |
-          TAG_NAME="${{ steps.release_info.outputs.tag_name }}"
-          VERSION_NAME="${{ steps.release_info.outputs.version_name }}"
-          VERSION_CODE=$(grep -E '^[[:space:]]*appVersionCode[[:space:]]*=' gradle.properties | head -n1 | cut -d'=' -f2 | tr -d '[:space:]"')
+          TAG_NAME="${{ needs.version_and_tag.outputs.tag_name }}"
+          VERSION_NAME="${{ needs.version_and_tag.outputs.version_name }}"
+          VERSION_CODE="${{ needs.version_and_tag.outputs.version_code }}"
           APK_FILE="${{ steps.verify_assets.outputs.apk_file }}"
           SHA256_HASH="${{ steps.verify_assets.outputs.sha256_hash }}"
 
@@ -310,8 +477,8 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: "Release ${{ steps.release_info.outputs.tag_name }}"
+          tag_name: ${{ needs.version_and_tag.outputs.tag_name }}
+          name: "Release ${{ needs.version_and_tag.outputs.tag_name }}"
           body_path: release_notes.md
           draft: false
           prerelease: false
@@ -330,7 +497,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "=== Verifying Attached Downloadable Assets on GitHub Release ==="
-          TAG="${{ steps.release_info.outputs.tag_name }}"
+          TAG="${{ needs.version_and_tag.outputs.tag_name }}"
           APK_NAME="${{ steps.verify_assets.outputs.apk_file }}"
           CHECKSUM_NAME="${{ steps.verify_assets.outputs.checksum_file }}"
           APK_PATH="${{ steps.verify_assets.outputs.apk_path }}"

@@ -50,30 +50,32 @@ versionName = appVersionName
 
 ---
 
-## 🔄 Automated Workflows
+## 🔄 Unified Release Pipeline (`.github/workflows/release.yml`)
 
-### 1. Version Detection & Tagging (`.github/workflows/version-and-tag.yml`)
-- **Trigger**: Push to release branch (`main`).
-- **Concurrency**: Protected against concurrent pushes (`cancel-in-progress: false`).
-- **Steps**:
-  1. Checks out repository with full history (`fetch-depth: 0`).
-  2. Extracts `appVersionName` and `appVersionCode` from `gradle.properties`.
-  3. Validates SemVer formatting (`MAJOR.MINOR.PATCH`).
-  4. Validates `versionCode` is a positive integer.
-  5. Checks whether tag `v<versionName>` already exists. If yes, exits cleanly.
-  6. Inspects all prior release tags and verifies `versionCode` > highest prior `versionCode`.
-  7. Creates an annotated Git tag `v<versionName>` and pushes to `origin` using `GITHUB_TOKEN` permissions (`contents: write`).
+The release system uses a **single, deterministic two-stage pipeline** that triggers automatically upon any push to `main` (or via manual `workflow_dispatch`). It does not rely on cross-workflow triggers or `GITHUB_TOKEN` event propagation.
 
-### 2. Build & Publish Release (`.github/workflows/release.yml`)
-- **Trigger**: Push of any release tag (`v*.*.*`).
-- **Build Environment**: Uses JDK 21 (Temurin) and the project's committed Gradle 9.3.1 wrapper (`./gradlew`).
-- **Test Gate**: Runs JVM unit test suite (`./gradlew :app:testDebugUnitTest`). If tests fail, release publishing immediately halts.
-- **Automated Signing**: Automatically generates a valid signing keystore during the workflow run and signs the release APK with Android APK Signature Scheme v2. No manual keystore creation or GitHub Secrets configuration is required.
-- **Optional Secret Override**: If `KEYSTORE_BASE64`, `STORE_PASSWORD`, and `KEY_PASSWORD` secrets are provided, the workflow automatically uses that persistent production keystore instead of auto-generating one.
-- **Signature Verification**: Verifies the resulting APK signature using `apksigner` before release staging.
-- **Artifacts & Checksums**: Builds `TenQuestions-v<version>-release.apk` and generates cryptographic checksum `TenQuestions-v<version>-release.apk.sha256`.
-- **Changelog & Release Notes**: Automatically aggregates commit history since the previous release tag.
-- **Publish**: Publishes official GitHub Release with attached APK and SHA-256 checksum.
+### Stage 1: `version_and_tag` (Detection, Validation & Tagging)
+1. **Repository Checkout**: Checks out full Git history (`fetch-depth: 0`).
+2. **Version Extraction**: Extracts `appVersionName` and `appVersionCode` from `gradle.properties`.
+3. **SemVer & Code Validation**: Enforces strict SemVer syntax (`MAJOR.MINOR.PATCH`) and positive integer `versionCode`.
+4. **Duplicate Protection & Recovery**:
+   - Queries `refs/tags/v<versionName>` and checks GitHub API (`gh release view`) for published releases.
+   - If the GitHub Release for this version already exists: gracefully exits to prevent duplicate releases.
+   - If the tag exists but no GitHub Release was published (e.g. from a previously untriggered workflow): proceeds to build and publish the release.
+   - If neither exists: verifies `versionCode` strictly increases over previous releases, then creates and pushes annotated Git tag `v<versionName>`.
+
+### Stage 2: `release` (Build, Test, Sign & Publish)
+*Runs automatically when Stage 1 determines a release should be published.*
+1. **Exact Checkout**: Checks out the repository at the exact release tag (`ref: v<versionName>`).
+2. **JDK & Gradle Setup**: Uses Temurin JDK 21 and the committed Gradle wrapper (`./gradlew`).
+3. **Unit Tests Gate**: Executes `./gradlew :app:testDebugUnitTest`. If tests fail, the workflow aborts immediately before any APK is built or published.
+4. **Signing**: Detects permanent production secrets (`KEYSTORE_BASE64`, `STORE_PASSWORD`, `KEY_PASSWORD`) and uses them; otherwise auto-generates a release key.
+5. **APK Assembly**: Builds release APK (`./gradlew :app:assembleRelease`).
+6. **Signature Verification**: Verifies cryptographic signature using `apksigner` (or `jarsigner`).
+7. **Staging & Checksum**: Stages `TenQuestions-v<version>-release.apk` and generates cryptographic checksum `TenQuestions-v<version>-release.apk.sha256`.
+8. **Changelog Generation**: Generates release notes from Git commits since the previous release tag.
+9. **GitHub Release Publication**: Publishes the official GitHub Release with both assets attached (`softprops/action-gh-release@v2`).
+10. **Post-Upload Verification**: Uses `gh release view` to verify both the APK and checksum are live on GitHub, with automatic CLI fallback upload (`gh release upload --clobber`) and hard exit on missing assets.
 
 ---
 
